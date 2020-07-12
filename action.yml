@@ -16,6 +16,15 @@ inputs:
     description: 'Capture the full scrollable page, not just the viewport'
     required: false
     default: false
+  width:
+    description: 'The vieport width'
+    required: false
+  height:
+    description: 'The vieport height'
+    required: false
+  hide-elements:
+    description: 'Hide dom elements'
+    required: false
 outputs:
   path:
     description: 'The filesystem path to the website screenshot'
