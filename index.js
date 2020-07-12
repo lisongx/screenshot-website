@@ -36,6 +36,8 @@ async function run() {
       ...inputs
     };
 
+    console.log('all options', options)
+
     // Capture and write to dest
     await captureWebsite.file(source, dest, options);
 
