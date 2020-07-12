@@ -5157,6 +5157,8 @@ async function run() {
       ...inputs
     };
 
+    console.log('all options', options)
+
     // Capture and write to dest
     await captureWebsite.file(source, dest, options);
 
@@ -14495,7 +14497,9 @@ class BasicCredentialHandler {
         this.password = password;
     }
     prepareRequest(options) {
-        options.headers['Authorization'] = 'Basic ' + Buffer.from(this.username + ':' + this.password).toString('base64');
+        options.headers['Authorization'] =
+            'Basic ' +
+                Buffer.from(this.username + ':' + this.password).toString('base64');
     }
     // This handler cannot handle 401
     canHandleAuthentication(response) {
@@ -14531,7 +14535,8 @@ class PersonalAccessTokenCredentialHandler {
     // currently implements pre-authorization
     // TODO: support preAuth = false where it hooks on 401
     prepareRequest(options) {
-        options.headers['Authorization'] = 'Basic ' + Buffer.from('PAT:' + this.token).toString('base64');
+        options.headers['Authorization'] =
+            'Basic ' + Buffer.from('PAT:' + this.token).toString('base64');
     }
     // This handler cannot handle 401
     canHandleAuthentication(response) {
@@ -19770,6 +19775,8 @@ exports.getState = getState;
 
 const yaml = __webpack_require__(414);
 
+const ARRAY_INPUT_NAMES = ['hideElements'];
+
 function normalizeInputName(inputName) {
   const chars = inputName.toLowerCase().split('');
   let normalized = '';
@@ -19789,7 +19796,12 @@ function normalizeInputName(inputName) {
 }
 
 function normalizeInputValue(inputName, inputValue) {
-  return yaml.safeLoad(inputValue);
+  const val = yaml.safeLoad(inputValue);
+  if (ARRAY_INPUT_NAMES.includes(inputName)) {
+    return val.split(',');
+  }
+
+  return val;
 }
 
 // Thank you, octokit/request-action :bow:
@@ -22021,6 +22033,7 @@ var HttpCodes;
     HttpCodes[HttpCodes["RequestTimeout"] = 408] = "RequestTimeout";
     HttpCodes[HttpCodes["Conflict"] = 409] = "Conflict";
     HttpCodes[HttpCodes["Gone"] = 410] = "Gone";
+    HttpCodes[HttpCodes["TooManyRequests"] = 429] = "TooManyRequests";
     HttpCodes[HttpCodes["InternalServerError"] = 500] = "InternalServerError";
     HttpCodes[HttpCodes["NotImplemented"] = 501] = "NotImplemented";
     HttpCodes[HttpCodes["BadGateway"] = 502] = "BadGateway";
@@ -22045,8 +22058,18 @@ function getProxyUrl(serverUrl) {
     return proxyUrl ? proxyUrl.href : '';
 }
 exports.getProxyUrl = getProxyUrl;
-const HttpRedirectCodes = [HttpCodes.MovedPermanently, HttpCodes.ResourceMoved, HttpCodes.SeeOther, HttpCodes.TemporaryRedirect, HttpCodes.PermanentRedirect];
-const HttpResponseRetryCodes = [HttpCodes.BadGateway, HttpCodes.ServiceUnavailable, HttpCodes.GatewayTimeout];
+const HttpRedirectCodes = [
+    HttpCodes.MovedPermanently,
+    HttpCodes.ResourceMoved,
+    HttpCodes.SeeOther,
+    HttpCodes.TemporaryRedirect,
+    HttpCodes.PermanentRedirect
+];
+const HttpResponseRetryCodes = [
+    HttpCodes.BadGateway,
+    HttpCodes.ServiceUnavailable,
+    HttpCodes.GatewayTimeout
+];
 const RetryableHttpVerbs = ['OPTIONS', 'GET', 'DELETE', 'HEAD'];
 const ExponentialBackoffCeiling = 10;
 const ExponentialBackoffTimeSlice = 5;
@@ -22171,18 +22194,22 @@ class HttpClient {
      */
     async request(verb, requestUrl, data, headers) {
         if (this._disposed) {
-            throw new Error("Client has already been disposed.");
+            throw new Error('Client has already been disposed.');
         }
         let parsedUrl = url.parse(requestUrl);
         let info = this._prepareRequest(verb, parsedUrl, headers);
         // Only perform retries on reads since writes may not be idempotent.
-        let maxTries = (this._allowRetries && RetryableHttpVerbs.indexOf(verb) != -1) ? this._maxRetries + 1 : 1;
+        let maxTries = this._allowRetries && RetryableHttpVerbs.indexOf(verb) != -1
+            ? this._maxRetries + 1
+            : 1;
         let numTries = 0;
         let response;
         while (numTries < maxTries) {
             response = await this.requestRaw(info, data);
             // Check if it's an authentication challenge
-            if (response && response.message && response.message.statusCode === HttpCodes.Unauthorized) {
+            if (response &&
+                response.message &&
+                response.message.statusCode === HttpCodes.Unauthorized) {
                 let authenticationHandler;
                 for (let i = 0; i < this.handlers.length; i++) {
                     if (this.handlers[i].canHandleAuthentication(response)) {
@@ -22200,21 +22227,32 @@ class HttpClient {
                 }
             }
             let redirectsRemaining = this._maxRedirects;
-            while (HttpRedirectCodes.indexOf(response.message.statusCode) != -1
-                && this._allowRedirects
-                && redirectsRemaining > 0) {
-                const redirectUrl = response.message.headers["location"];
+            while (HttpRedirectCodes.indexOf(response.message.statusCode) != -1 &&
+                this._allowRedirects &&
+                redirectsRemaining > 0) {
+                const redirectUrl = response.message.headers['location'];
                 if (!redirectUrl) {
                     // if there's no location to redirect to, we won't
                     break;
                 }
                 let parsedRedirectUrl = url.parse(redirectUrl);
-                if (parsedUrl.protocol == 'https:' && parsedUrl.protocol != parsedRedirectUrl.protocol && !this._allowRedirectDowngrade) {
-                    throw new Error("Redirect from HTTPS to HTTP protocol. This downgrade is not allowed for security reasons. If you want to allow this behavior, set the allowRedirectDowngrade option to true.");
+                if (parsedUrl.protocol == 'https:' &&
+                    parsedUrl.protocol != parsedRedirectUrl.protocol &&
+                    !this._allowRedirectDowngrade) {
+                    throw new Error('Redirect from HTTPS to HTTP protocol. This downgrade is not allowed for security reasons. If you want to allow this behavior, set the allowRedirectDowngrade option to true.');
                 }
                 // we need to finish reading the response before reassigning response
                 // which will leak the open socket.
                 await response.readBody();
+                // strip authorization header if redirected to a different hostname
+                if (parsedRedirectUrl.hostname !== parsedUrl.hostname) {
+                    for (let header in headers) {
+                        // header names are case insensitive
+                        if (header.toLowerCase() === 'authorization') {
+                            delete headers[header];
+                        }
+                    }
+                }
                 // let's make the request with the new redirectUrl
                 info = this._prepareRequest(verb, parsedRedirectUrl, headers);
                 response = await this.requestRaw(info, data);
@@ -22265,8 +22303,8 @@ class HttpClient {
      */
     requestRawWithCallback(info, data, onResult) {
         let socket;
-        if (typeof (data) === 'string') {
-            info.options.headers["Content-Length"] = Buffer.byteLength(data, 'utf8');
+        if (typeof data === 'string') {
+            info.options.headers['Content-Length'] = Buffer.byteLength(data, 'utf8');
         }
         let callbackCalled = false;
         let handleResult = (err, res) => {
@@ -22279,7 +22317,7 @@ class HttpClient {
             let res = new HttpClientResponse(msg);
             handleResult(null, res);
         });
-        req.on('socket', (sock) => {
+        req.on('socket', sock => {
             socket = sock;
         });
         // If we ever get disconnected, we want the socket to timeout eventually
@@ -22294,10 +22332,10 @@ class HttpClient {
             // res should have headers
             handleResult(err, null);
         });
-        if (data && typeof (data) === 'string') {
+        if (data && typeof data === 'string') {
             req.write(data, 'utf8');
         }
-        if (data && typeof (data) !== 'string') {
+        if (data && typeof data !== 'string') {
             data.on('close', function () {
                 req.end();
             });
@@ -22324,31 +22362,34 @@ class HttpClient {
         const defaultPort = usingSsl ? 443 : 80;
         info.options = {};
         info.options.host = info.parsedUrl.hostname;
-        info.options.port = info.parsedUrl.port ? parseInt(info.parsedUrl.port) : defaultPort;
-        info.options.path = (info.parsedUrl.pathname || '') + (info.parsedUrl.search || '');
+        info.options.port = info.parsedUrl.port
+            ? parseInt(info.parsedUrl.port)
+            : defaultPort;
+        info.options.path =
+            (info.parsedUrl.pathname || '') + (info.parsedUrl.search || '');
         info.options.method = method;
         info.options.headers = this._mergeHeaders(headers);
         if (this.userAgent != null) {
-            info.options.headers["user-agent"] = this.userAgent;
+            info.options.headers['user-agent'] = this.userAgent;
         }
         info.options.agent = this._getAgent(info.parsedUrl);
         // gives handlers an opportunity to participate
         if (this.handlers) {
-            this.handlers.forEach((handler) => {
+            this.handlers.forEach(handler => {
                 handler.prepareRequest(info.options);
             });
         }
         return info;
     }
     _mergeHeaders(headers) {
-        const lowercaseKeys = obj => Object.keys(obj).reduce((c, k) => (c[k.toLowerCase()] = obj[k], c), {});
+        const lowercaseKeys = obj => Object.keys(obj).reduce((c, k) => ((c[k.toLowerCase()] = obj[k]), c), {});
         if (this.requestOptions && this.requestOptions.headers) {
             return Object.assign({}, lowercaseKeys(this.requestOptions.headers), lowercaseKeys(headers));
         }
         return lowercaseKeys(headers || {});
     }
     _getExistingOrDefaultHeader(additionalHeaders, header, _default) {
-        const lowercaseKeys = obj => Object.keys(obj).reduce((c, k) => (c[k.toLowerCase()] = obj[k], c), {});
+        const lowercaseKeys = obj => Object.keys(obj).reduce((c, k) => ((c[k.toLowerCase()] = obj[k]), c), {});
         let clientHeader;
         if (this.requestOptions && this.requestOptions.headers) {
             clientHeader = lowercaseKeys(this.requestOptions.headers)[header];
@@ -22386,7 +22427,7 @@ class HttpClient {
                     proxyAuth: proxyUrl.auth,
                     host: proxyUrl.hostname,
                     port: proxyUrl.port
-                },
+                }
             };
             let tunnelAgent;
             const overHttps = proxyUrl.protocol === 'https:';
@@ -22413,7 +22454,9 @@ class HttpClient {
             // we don't want to set NODE_TLS_REJECT_UNAUTHORIZED=0 since that will affect request for entire process
             // http.RequestOptions doesn't expose a way to modify RequestOptions.agent.options
             // we have to cast it to any and change it directly
-            agent.options = Object.assign(agent.options || {}, { rejectUnauthorized: false });
+            agent.options = Object.assign(agent.options || {}, {
+                rejectUnauthorized: false
+            });
         }
         return agent;
     }
@@ -22474,7 +22517,7 @@ class HttpClient {
                     msg = contents;
                 }
                 else {
-                    msg = "Failed request: (" + statusCode + ")";
+                    msg = 'Failed request: (' + statusCode + ')';
                 }
                 let err = new Error(msg);
                 // attach statusCode and body obj (if available) to the error object
@@ -33445,12 +33488,10 @@ function getProxyUrl(reqUrl) {
     }
     let proxyVar;
     if (usingSsl) {
-        proxyVar = process.env["https_proxy"] ||
-            process.env["HTTPS_PROXY"];
+        proxyVar = process.env['https_proxy'] || process.env['HTTPS_PROXY'];
     }
     else {
-        proxyVar = process.env["http_proxy"] ||
-            process.env["HTTP_PROXY"];
+        proxyVar = process.env['http_proxy'] || process.env['HTTP_PROXY'];
     }
     if (proxyVar) {
         proxyUrl = url.parse(proxyVar);
@@ -33462,7 +33503,7 @@ function checkBypass(reqUrl) {
     if (!reqUrl.hostname) {
         return false;
     }
-    let noProxy = process.env["no_proxy"] || process.env["NO_PROXY"] || '';
+    let noProxy = process.env['no_proxy'] || process.env['NO_PROXY'] || '';
     if (!noProxy) {
         return false;
     }
@@ -33483,7 +33524,10 @@ function checkBypass(reqUrl) {
         upperReqHosts.push(`${upperReqHosts[0]}:${reqPort}`);
     }
     // Compare request host against noproxy
-    for (let upperNoProxyItem of noProxy.split(',').map(x => x.trim().toUpperCase()).filter(x => x)) {
+    for (let upperNoProxyItem of noProxy
+        .split(',')
+        .map(x => x.trim().toUpperCase())
+        .filter(x => x)) {
         if (upperReqHosts.some(x => x === upperNoProxyItem)) {
             return true;
         }
@@ -34148,7 +34192,7 @@ function rmkidsSync (p, options) {
 /***/ 975:
 /***/ (function(module) {
 
-module.exports = {"_from":"puppeteer","_id":"puppeteer@2.1.1","_inBundle":false,"_integrity":"sha512-LWzaDVQkk1EPiuYeTOj+CZRIjda4k2s5w4MK4xoH2+kgWV/SDlkYHmxatDdtYrciHUKSXTsGgPgPP8ILVdBsxg==","_location":"/puppeteer","_phantomChildren":{"async-limiter":"1.0.1","fs.realpath":"1.0.0","inflight":"1.0.6","inherits":"2.0.4","minimatch":"3.0.4","once":"1.4.0","path-is-absolute":"1.0.1"},"_requested":{"type":"tag","registry":true,"raw":"puppeteer","name":"puppeteer","escapedName":"puppeteer","rawSpec":"","saveSpec":null,"fetchSpec":"latest"},"_requiredBy":["#USER","/"],"_resolved":"https://registry.npmjs.org/puppeteer/-/puppeteer-2.1.1.tgz","_shasum":"ccde47c2a688f131883b50f2d697bd25189da27e","_spec":"puppeteer","_where":"/Users/swinton/GitHub/swinton/screenshot-url","author":{"name":"The Chromium Authors"},"browser":{"./lib/BrowserFetcher.js":false,"ws":"./utils/browser/WebSocket","fs":false,"child_process":false,"rimraf":false,"readline":false},"bugs":{"url":"https://github.com/puppeteer/puppeteer/issues"},"bundleDependencies":false,"dependencies":{"@types/mime-types":"^2.1.0","debug":"^4.1.0","extract-zip":"^1.6.6","https-proxy-agent":"^4.0.0","mime":"^2.0.3","mime-types":"^2.1.25","progress":"^2.0.1","proxy-from-env":"^1.0.0","rimraf":"^2.6.1","ws":"^6.1.0"},"deprecated":false,"description":"A high-level API to control headless Chrome over the DevTools Protocol","devDependencies":{"@types/debug":"0.0.31","@types/extract-zip":"^1.6.2","@types/mime":"^2.0.0","@types/node":"^8.10.34","@types/rimraf":"^2.0.2","@types/ws":"^6.0.1","commonmark":"^0.28.1","cross-env":"^5.0.5","eslint":"^5.15.1","esprima":"^4.0.0","jpeg-js":"^0.3.4","minimist":"^1.2.0","ncp":"^2.0.0","pixelmatch":"^4.0.2","pngjs":"^3.3.3","text-diff":"^1.0.1","typescript":"3.2.2"},"engines":{"node":">=8.16.0"},"homepage":"https://github.com/puppeteer/puppeteer#readme","license":"Apache-2.0","main":"index.js","name":"puppeteer","puppeteer":{"chromium_revision":"722234"},"repository":{"type":"git","url":"git+https://github.com/puppeteer/puppeteer.git"},"scripts":{"apply-next-version":"node utils/apply_next_version.js","bundle":"npx browserify -r ./index.js:puppeteer -o utils/browser/puppeteer-web.js","coverage":"cross-env COVERAGE=true npm run unit","debug-unit":"node --inspect-brk test/test.js","doc":"node utils/doclint/cli.js","fjunit":"PUPPETEER_PRODUCT=juggler node test/test.js","funit":"PUPPETEER_PRODUCT=firefox node test/test.js","install":"node install.js","lint":"([ \"$CI\" = true ] && eslint --quiet -f codeframe . || eslint .) && npm run tsc && npm run doc","test":"npm run lint --silent && npm run coverage && npm run test-doclint && npm run test-types && node utils/testrunner/test/test.js","test-doclint":"node utils/doclint/check_public_api/test/test.js && node utils/doclint/preprocessor/test.js","test-types":"node utils/doclint/generate_types && npx -p typescript@2.1 tsc -p utils/doclint/generate_types/test/","tsc":"tsc -p .","unit":"node test/test.js","unit-bundle":"node utils/browser/test.js"},"version":"2.1.1"};
+module.exports = {"_args":[["puppeteer@2.1.1","/Users/lisong/Work/screenshot-website"]],"_from":"puppeteer@2.1.1","_id":"puppeteer@2.1.1","_inBundle":false,"_integrity":"sha512-LWzaDVQkk1EPiuYeTOj+CZRIjda4k2s5w4MK4xoH2+kgWV/SDlkYHmxatDdtYrciHUKSXTsGgPgPP8ILVdBsxg==","_location":"/puppeteer","_phantomChildren":{"async-limiter":"1.0.1","fs.realpath":"1.0.0","inflight":"1.0.6","inherits":"2.0.4","minimatch":"3.0.4","once":"1.4.0","path-is-absolute":"1.0.1"},"_requested":{"type":"version","registry":true,"raw":"puppeteer@2.1.1","name":"puppeteer","escapedName":"puppeteer","rawSpec":"2.1.1","saveSpec":null,"fetchSpec":"2.1.1"},"_requiredBy":["/","/capture-website"],"_resolved":"https://registry.npmjs.org/puppeteer/-/puppeteer-2.1.1.tgz","_spec":"2.1.1","_where":"/Users/lisong/Work/screenshot-website","author":{"name":"The Chromium Authors"},"browser":{"./lib/BrowserFetcher.js":false,"ws":"./utils/browser/WebSocket","fs":false,"child_process":false,"rimraf":false,"readline":false},"bugs":{"url":"https://github.com/puppeteer/puppeteer/issues"},"dependencies":{"@types/mime-types":"^2.1.0","debug":"^4.1.0","extract-zip":"^1.6.6","https-proxy-agent":"^4.0.0","mime":"^2.0.3","mime-types":"^2.1.25","progress":"^2.0.1","proxy-from-env":"^1.0.0","rimraf":"^2.6.1","ws":"^6.1.0"},"description":"A high-level API to control headless Chrome over the DevTools Protocol","devDependencies":{"@types/debug":"0.0.31","@types/extract-zip":"^1.6.2","@types/mime":"^2.0.0","@types/node":"^8.10.34","@types/rimraf":"^2.0.2","@types/ws":"^6.0.1","commonmark":"^0.28.1","cross-env":"^5.0.5","eslint":"^5.15.1","esprima":"^4.0.0","jpeg-js":"^0.3.4","minimist":"^1.2.0","ncp":"^2.0.0","pixelmatch":"^4.0.2","pngjs":"^3.3.3","text-diff":"^1.0.1","typescript":"3.2.2"},"engines":{"node":">=8.16.0"},"homepage":"https://github.com/puppeteer/puppeteer#readme","license":"Apache-2.0","main":"index.js","name":"puppeteer","puppeteer":{"chromium_revision":"722234"},"repository":{"type":"git","url":"git+https://github.com/puppeteer/puppeteer.git"},"scripts":{"apply-next-version":"node utils/apply_next_version.js","bundle":"npx browserify -r ./index.js:puppeteer -o utils/browser/puppeteer-web.js","coverage":"cross-env COVERAGE=true npm run unit","debug-unit":"node --inspect-brk test/test.js","doc":"node utils/doclint/cli.js","fjunit":"PUPPETEER_PRODUCT=juggler node test/test.js","funit":"PUPPETEER_PRODUCT=firefox node test/test.js","install":"node install.js","lint":"([ \"$CI\" = true ] && eslint --quiet -f codeframe . || eslint .) && npm run tsc && npm run doc","test":"npm run lint --silent && npm run coverage && npm run test-doclint && npm run test-types && node utils/testrunner/test/test.js","test-doclint":"node utils/doclint/check_public_api/test/test.js && node utils/doclint/preprocessor/test.js","test-types":"node utils/doclint/generate_types && npx -p typescript@2.1 tsc -p utils/doclint/generate_types/test/","tsc":"tsc -p .","unit":"node test/test.js","unit-bundle":"node utils/browser/test.js"},"version":"2.1.1"};
 
 /***/ }),
 
